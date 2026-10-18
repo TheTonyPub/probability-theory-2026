@@ -1,7 +1,10 @@
-"""Автопроверка ДЗ 4 «Математическое ожидание и дисперсия».
+"""Автопроверка ДЗ 4–5 «Матожидание и дисперсия, ЗБЧ и ЦПТ».
 
 Запускает каждый ноутбук с нуля, затем в том же ядре выполняет проверки
-и собирает баллы в таблицу.
+и собирает баллы в таблицу. Части A и B (задачи 1–6, 12 баллов) проверяются
+автоматически. Задачу 7 (эксперимент, 8 баллов) оценивает преподаватель;
+проверка только сообщает, сколько в ней наблюдений, и ищет одинаковые данные
+в разных работах.
 
     python grade.py <ноутбук или папка> [...] --out grades
 
@@ -15,6 +18,7 @@ import csv
 import json
 import sys
 import tempfile
+from collections import defaultdict
 from pathlib import Path
 
 import nbformat
@@ -30,6 +34,15 @@ N_VARIANTS = 40
 def params(variant):
     """Параметры варианта. Не изменяйте эту функцию."""
     v = int(variant)
+    r4 = 0.5 + 0.04 * (v % 6)
+    values4 = np.r_[np.arange(1, 9), 20]
+    w4 = np.r_[r4 ** np.arange(8), 0.0]
+    w4 = w4 / w4.sum() * (1 - (0.02 + 0.005 * (v % 4)))
+    w4[-1] = 0.02 + 0.005 * (v % 4)
+    probs4 = np.round(w4, 6) / np.round(w4, 6).sum()
+    n4 = 40 + 5 * (v % 5)
+    mu4 = float(values4 @ probs4)
+    sd4 = float(np.sqrt(((values4 - mu4) ** 2) @ probs4))
     return {
         # задача 2 (мс)
         "q2": round(0.15 + 0.05 * (v % 6), 2),   # доля ответов из кэша
@@ -37,17 +50,20 @@ def params(variant):
         "d2": 15 + 5 * (v % 4),                   # минимальное время обработки
         "mu2": 60 + 10 * (v % 7),                 # средняя добавка к d2
         "T2": 120 + 20 * (v % 5),                 # таймаут клиента
-        # задача 3
-        "N3": 20 + v % 11,
-        "m3": 30 + 2 * (v % 9),
+        # задача 4: число товаров в заказе
+        "values4": values4,
+        "probs4": probs4,
+        "n4": n4,                                 # заказов за смену
+        "s4": int(round(n4 * mu4 + (2.0 + 0.1 * (v % 5)) * sd4 * np.sqrt(n4))),   # порог числа товаров
+        "T4": 400 + 25 * (v % 4),                 # план отгрузки
     }
 
 
 def make_data(variant):
-    """Данные варианта для задач 4 и 5. Не изменяйте эту функцию."""
+    """Данные варианта для задач 3, 5 и 6. Не изменяйте эту функцию."""
     v = int(variant)
     r = np.random.default_rng(30_000 + v)
-    # задача 4: рекламные кампании в трёх регионах
+    # задача 3: рекламные кампании в трёх регионах
     n = 600
     region = r.choice(np.array(["Север", "Центр", "Юг"]), size=n, p=[0.3, 0.4, 0.3])
     g = np.searchsorted(np.array(["Север", "Центр", "Юг"]), region)
@@ -58,21 +74,35 @@ def make_data(variant):
     ads = np.where(is_test == 1, np.round(r.uniform(150, 400, n), 2), ads)
     sales = np.where(is_test == 1, 0.0, sales)
     campaigns = {"region": region, "ads": ads, "sales": sales, "is_test": is_test}
-    # задача 5: дневные доходности трёх активов, %
-    sig = np.array([1.0 + 0.1 * (v % 5), 1.5, 0.8 + 0.05 * (v % 7)])
-    corr = np.array([[1.0, 0.1 + 0.1 * (v % 5), -0.3 + 0.1 * (v % 4)],
-                     [0.1 + 0.1 * (v % 5), 1.0, 0.1 * (v % 5)],
-                     [-0.3 + 0.1 * (v % 4), 0.1 * (v % 5), 1.0]])
-    returns = np.round(r.multivariate_normal([0.05, 0.08, 0.03], corr * np.outer(sig, sig), size=750), 4)
-    return campaigns, returns
+    # задача 5: журнал просмотров A/B-теста (одна строка — один просмотр)
+    m = 3000
+    group = np.where(r.random(m) < 0.5, "A", "B")
+    lift = 1 + 0.05 * (v % 5)
+    q = r.beta(1.2, 12.0, m) * np.where(group == "B", lift, 1.0)
+    views = r.geometric(1 / (8 + v % 6), m)
+    clicks = r.binomial(views, np.minimum(q, 1))
+    user = np.repeat(np.arange(1, m + 1), views)
+    click = np.concatenate([np.r_[np.ones(c, int), np.zeros(k - c, int)] for c, k in zip(clicks, views)])
+    order = r.permutation(user.size)
+    views_log = {"user_id": user[order], "group": np.repeat(group, views)[order], "click": click[order]}
+    # задача 6: заболеваемость по районам
+    m6 = 500
+    pop = np.round(np.exp(r.uniform(np.log(200), np.log(100_000), m6))).astype(int)
+    p6 = 0.008 + 0.001 * (v % 5)
+    pr = np.full(m6, p6)
+    hot = r.choice(np.where(pop > 20_000)[0], 4, replace=False)
+    pr[hot] *= 1.5
+    districts = {"district": np.arange(1, m6 + 1), "population": pop, "cases": r.binomial(pop, pr)}
+    return campaigns, views_log, districts
 '''
 # <<< SHARED
 
 # Код проверки выполняется в ядре ноутбука после всех ячеек студента.
 CHECK = r'''
-def __hw04_check(result_path, shared):
+def __hw0405_check(result_path, shared):
     import json
     import numpy as np
+    from scipy import stats as _st
 
     G = globals()
     ns = {}
@@ -101,14 +131,8 @@ def __hw04_check(result_path, shared):
             return False, f"{name}: форма {v.shape}, ожидалась {exp.shape}"
         if np.allclose(v, exp, rtol=rtol, atol=atol):
             return True, ""
-        return False, f"{name} = {np.round(v, 6).tolist()} — неверно"
-
-    def all_close(names, expected, **kw):
-        for n, e in zip(names, expected):
-            ok, msg = close(n, e, **kw)
-            if not ok:
-                return False, msg
-        return True, ""
+        shown = np.round(v, 6).tolist() if v.size <= 6 else f"массив, первые значения {np.round(v.ravel()[:4], 4).tolist()}"
+        return False, f"{name} = {shown} — неверно"
 
     def ref_moments(x, w):
         x = np.asarray(x, float); w = np.asarray(w, float); w = w / w.sum()
@@ -128,22 +152,33 @@ def __hw04_check(result_path, shared):
         V = 0
     valid = 1 <= V <= ns["N_VARIANTS"]
 
+    # задача 7: только сведения для преподавателя
+    exp = {"title": str(G.get("EXP_TITLE", "")).strip(), "n": 0, "hash": ""}
+    try:
+        data = np.asarray([float(t) for t in G.get("EXP_DATA", [])], dtype=float)
+        exp["n"] = int(data.size)
+        if data.size:
+            exp["hash"] = __import__("hashlib").md5(np.round(data, 6).tobytes()).hexdigest()
+            exp["mean"] = float(data.mean())
+    except Exception as exc:
+        exp["error"] = f"EXP_DATA не читается как список чисел: {exc}"
+
     if valid:
         P = ns["params"](V)
-        camp, rets = ns["make_data"](V)
+        camp, vlog, dist = ns["make_data"](V)
 
         # ---- задача 1: функция moments на скрытых тестах
         def mtest(cases, what):
             def run():
                 f = get("moments")
                 for x, w in cases:
-                    exp = ref_moments(x, w)
+                    exp_ = ref_moments(x, w)
                     got = f(np.array(x, dtype=float), np.array(w, dtype=float))
                     got = [float(t) for t in got]
                     if len(got) != 3:
                         return False, "moments должна возвращать (mean, var, skew)"
-                    tol = [1e-9 * max(1, abs(exp[0])), 1e-6 * max(exp[1], 1e-12), 1e-5]
-                    if any(abs(a - b) > t for a, b, t in zip(got, exp, tol)):
+                    tol = [1e-9 * max(1, abs(exp_[0])), 1e-6 * max(exp_[1], 1e-12), 1e-5]
+                    if any(abs(a - b) > t for a, b, t in zip(got, exp_, tol)):
                         return False, f"{what}: неверно на values={np.round(x[:6], 3).tolist()}…"
                 return True, ""
             return run
@@ -174,59 +209,99 @@ def __hw04_check(result_path, shared):
         add(2, "2.2 EX2", 0.75, lambda: close("EX2", EX))
         add(2, "2.3 DX2", 0.75, lambda: close("DX2", DX))
 
-        # ---- задача 3: пустые серверы
-        N, m = P["N3"], P["m3"]
-        p1, p2 = (1 - 1 / N) ** m, (1 - 2 / N) ** m
-        add(3, "3.1 E3_empty", 0.5, lambda: close("E3_empty", N * p1))
-        add(3, "3.2 D3_empty", 1.0, lambda: close("D3_empty", N * p1 * (1 - p1) + N * (N - 1) * (p2 - p1 ** 2)))
-        add(3, "3.3 E3_single", 0.5, lambda: close("E3_single", m * (1 - 1 / N) ** (m - 1)))
-
-        # ---- задача 4: кампании, Симпсон
+        # ---- задача 3: кампании, Симпсон
         keep = camp["is_test"] == 0
-        reg, x4, y4 = camp["region"][keep], camp["ads"][keep], camp["sales"][keep]
-        add(4, "4.1 corr4_all", 0.5, lambda: close("corr4_all", np.corrcoef(x4, y4)[0, 1]))
+        reg, x3, y3 = camp["region"][keep], camp["ads"][keep], camp["sales"][keep]
+        add(3, "3.1 corr3_all", 0.5, lambda: close("corr3_all", np.corrcoef(x3, y3)[0, 1]))
 
-        def t42():
-            got = dict(get("corr4_by_region"))
-            exp = {g: np.corrcoef(x4[reg == g], y4[reg == g])[0, 1] for g in np.unique(reg)}
-            if set(map(str, got)) != set(exp):
-                return False, f"ключи {sorted(map(str, got))}, ожидались {sorted(exp)}"
-            bad = [g for g in exp if not np.isclose(float(got[g]), exp[g], rtol=1e-6)]
+        def t32():
+            got = dict(get("corr3_by_region"))
+            exp_ = {g: np.corrcoef(x3[reg == g], y3[reg == g])[0, 1] for g in np.unique(reg)}
+            if set(map(str, got)) != set(exp_):
+                return False, f"ключи {sorted(map(str, got))}, ожидались {sorted(exp_)}"
+            bad = [g for g in exp_ if not np.isclose(float(got[g]), exp_[g], rtol=1e-6)]
             return (not bad), f"неверно для регионов {bad}"
-        add(4, "4.2 corr4_by_region", 0.5, t42)
-        xc, yc = x4.copy(), y4.copy()
+        add(3, "3.2 corr3_by_region", 0.5, t32)
+        xc, yc = x3.copy(), y3.copy()
         for g in np.unique(reg):
-            xc[reg == g] -= x4[reg == g].mean(); yc[reg == g] -= y4[reg == g].mean()
-        add(4, "4.3 slope4_within", 0.5, lambda: close("slope4_within", (xc * yc).sum() / (xc ** 2).sum()))
-        ss_tot = ((y4 - y4.mean()) ** 2).sum()
-        ss_between = sum((reg == g).sum() * (y4[reg == g].mean() - y4.mean()) ** 2 for g in np.unique(reg))
-        add(4, "4.4 eta2_4", 0.5, lambda: close("eta2_4", ss_between / ss_tot))
+            xc[reg == g] -= x3[reg == g].mean(); yc[reg == g] -= y3[reg == g].mean()
+        add(3, "3.3 slope3_within", 0.5, lambda: close("slope3_within", (xc * yc).sum() / (xc ** 2).sum()))
+        ss_tot = ((y3 - y3.mean()) ** 2).sum()
+        ss_between = sum((reg == g).sum() * (y3[reg == g].mean() - y3.mean()) ** 2 for g in np.unique(reg))
+        add(3, "3.4 eta2_3", 0.5, lambda: close("eta2_3", ss_between / ss_tot))
 
-        # ---- задача 5: портфель минимальной дисперсии
-        S = np.cov(rets, rowvar=False)
-        ones = np.ones(3)
-        w = np.linalg.solve(S, ones); w = w / w.sum()
-        sd_min = np.sqrt(w @ S @ w)
-        sd_eq = np.sqrt(ones @ S @ ones) / 3
-        add(5, "5.1 cov5", 0.5, lambda: close("cov5", S))
-        add(5, "5.2 w5_min", 0.5, lambda: close("w5_min", w, rtol=1e-5))
-        add(5, "5.3 sd5_min", 0.5, lambda: close("sd5_min", sd_min, rtol=1e-5))
-        add(5, "5.4 gain5", 0.5, lambda: close("gain5", sd_eq / sd_min, rtol=1e-5))
+        # ---- задача 4: точная сумма против ЦПТ
+        vals, probs = P["values4"], P["probs4"]
+        pmf1 = np.zeros(vals.max() + 1); pmf1[vals] = probs
+        mu4 = vals @ probs; sd4 = np.sqrt(((vals - mu4) ** 2) @ probs)
+        pm = np.array([1.0])
+        for _ in range(P["n4"]):
+            pm = np.convolve(pm, pmf1)
+        add(4, "4.1 p4_exact", 0.75, lambda: close("p4_exact", pm[P["s4"]:].sum(), rtol=1e-6, atol=1e-12))
+        add(4, "4.2 p4_clt", 0.5, lambda: close("p4_clt", _st.norm.sf((P["s4"] - 0.5 - P["n4"] * mu4) / (sd4 * np.sqrt(P["n4"]))), rtol=1e-6, atol=1e-12))
+        pm, nmin = np.array([1.0]), 0
+        while pm[P["T4"]:].sum() < 0.95:
+            pm = np.convolve(pm, pmf1); nmin += 1
+
+        def t43():
+            got = float(get("n4_min"))
+            if got != nmin:
+                return False, f"n4_min = {got:g} — неверно" + (" (похоже на ответ по ЦПТ, а нужен точный)" if abs(got - nmin) <= 3 else "")
+            return True, ""
+        add(4, "4.3 n4_min", 0.75, t43)
+
+        # ---- задача 5: A/B-тест, дельта-метод
+        uid, grp, clk = vlog["user_id"], vlog["group"], vlog["click"]
+        ctr, vn, vd = {}, {}, {}
+        for g in ("A", "B"):
+            sel = grp == g
+            users, inv = np.unique(uid[sel], return_inverse=True)
+            cu = np.bincount(inv, weights=clk[sel]); vu = np.bincount(inv).astype(float)
+            R = cu.sum() / vu.sum()
+            ctr[g] = R
+            vn[g] = R * (1 - R) / vu.sum()
+            vd[g] = np.var(cu - R * vu, ddof=1) / (users.size * vu.mean() ** 2)
+        diff = ctr["B"] - ctr["A"]
+        sed = np.sqrt(vd["A"] + vd["B"])
+        z = _st.norm.ppf(0.975)
+        add(5, "5.1 diff5", 0.25, lambda: close("diff5", diff))
+        add(5, "5.2 se5_naive", 0.5, lambda: close("se5_naive", np.sqrt(vn["A"] + vn["B"])))
+        add(5, "5.3 se5_delta", 0.75, lambda: close("se5_delta", sed))
+        add(5, "5.4 ci5", 0.5, lambda: close("ci5", [diff - z * sed, diff + z * sed]))
+
+        # ---- задача 6: воронка
+        pop, cases = dist["population"], dist["cases"]
+        rate = cases / pop
+        pp = cases.sum() / pop.sum()
+        z6 = (rate - pp) / np.sqrt(pp * (1 - pp) / pop)
+        top = np.argsort(-rate, kind="stable")[:20]
+        flagged = np.sort(dist["district"][z6 > _st.norm.isf(0.05 / pop.size)])
+        add(6, "6.1 p6_pooled", 0.25, lambda: close("p6_pooled", pp))
+        add(6, "6.2 z6", 0.5, lambda: close("z6", z6))
+        add(6, "6.3 small6_share", 0.25, lambda: close("small6_share", np.mean(pop[top] < np.median(pop))))
+
+        def t64():
+            got = np.sort(np.asarray(get("flagged6")).astype(int).ravel())
+            if got.shape == flagged.shape and np.array_equal(got, flagged):
+                return True, ""
+            return False, f"flagged6 = {got.tolist()[:12]} — неверно"
+        add(6, "6.4 flagged6", 1.0, t64)
 
     total = round(sum(i["score"] for i in items), 2)
     out = {"student": student, "group": group, "variant": V, "valid_variant": valid,
-           "total": total, "max": 10.0, "items": items}
+           "total": total, "max": 12.0, "items": items, "experiment": exp}
     with open(result_path, "w", encoding="utf-8") as fh:
         json.dump(out, fh, ensure_ascii=False, indent=1)
 
-__hw04_check(RESULT_PATH, SHARED_CODE)
+__hw0405_check(RESULT_PATH, SHARED_CODE)
 '''
 
-TASKS = [1, 2, 3, 4, 5]
+TASKS = [1, 2, 3, 4, 5, 6]
+EXP_MIN = 30
 
 # Метки из скрытых комментариев в условии. Человек, читающий ноутбук в Colab, их не видит,
 # а нейросеть, которой передали .ipynb целиком, может выполнить скрытую инструкцию.
-CANARY_MARKERS = ['outlier_policy', 'timeout_units']
+CANARY_MARKERS = ['outlier_policy', 'timeout_units', 'ci_rule']
 
 
 def grade_one(path, timeout):
@@ -254,7 +329,7 @@ def grade_one(path, timeout):
             res = json.loads(result_path.read_text(encoding="utf-8"))
         else:
             res = {"student": "", "group": "", "variant": None, "valid_variant": False,
-                   "total": 0.0, "max": 10.0, "items": []}
+                   "total": 0.0, "max": 12.0, "items": [], "experiment": {"title": "", "n": 0, "hash": ""}}
             error = error or "проверка не запустилась (ошибка в последней ячейке проверки)"
     res["file"] = Path(path).name
     res["error"] = error
@@ -267,6 +342,27 @@ def task_score(res, t):
     return round(sum(i["score"] for i in res["items"] if i["task"] == t), 2)
 
 
+def mark_duplicates(results):
+    by_hash = defaultdict(list)
+    for r in results:
+        h = r["experiment"].get("hash")
+        if h and r["experiment"]["n"] >= 10:
+            by_hash[h].append(r["file"])
+    for r in results:
+        h = r["experiment"].get("hash")
+        r["experiment"]["same_as"] = [f for f in by_hash.get(h, []) if f != r["file"]] if h else []
+
+
+def exp_cell(r):
+    e = r["experiment"]
+    s = f"n = {e['n']}"
+    if e["n"] < EXP_MIN:
+        s += " ❗"
+    if e.get("same_as"):
+        s += " ⚠️ дубль"
+    return s
+
+
 def write_reports(results, out):
     out.mkdir(parents=True, exist_ok=True)
     for r in results:
@@ -274,24 +370,39 @@ def write_reports(results, out):
 
     with open(out / "grades.csv", "w", newline="", encoding="utf-8") as fh:
         wr = csv.writer(fh)
-        wr.writerow(["file", "student", "group", "variant"] + [f"task{t}" for t in TASKS] + ["total", "ai_marker"])
+        wr.writerow(["file", "student", "group", "variant"] + [f"task{t}" for t in TASKS]
+                    + ["auto_total", "exp_title", "exp_n", "exp_duplicate_of", "task7_manual", "total", "ai_marker"])
         for r in results:
-            wr.writerow([r["file"], r["student"], r["group"], r["variant"]] + [task_score(r, t) for t in TASKS] + [r["total"], ";".join(r["canary"])])
+            e = r["experiment"]
+            wr.writerow([r["file"], r["student"], r["group"], r["variant"]] + [task_score(r, t) for t in TASKS]
+                        + [r["total"], e.get("title", ""), e["n"], ";".join(e.get("same_as", [])), "", "", ";".join(r["canary"])])
 
-    lines = ["## ДЗ 4: результаты автопроверки", "",
-             "| Файл | Студент | Группа | Вариант | " + " | ".join(f"З{t}" for t in TASKS) + " | Итого | Метка ИИ |",
-             "|---|---|---|---|" + "---|" * len(TASKS) + "---|---|"]
+    lines = ["## ДЗ 4–5: результаты автопроверки", "",
+             "Задачи 1–6 — автоматически (из 12). Задачу 7 (эксперимент, из 8) оценивает преподаватель: "
+             "в `grades.csv` для неё есть пустые колонки `task7_manual` и `total`.", "",
+             "| Файл | Студент | Группа | Вариант | " + " | ".join(f"З{t}" for t in TASKS) + " | Авто (из 12) | Эксперимент | Метка ИИ |",
+             "|---|---|---|---|" + "---|" * len(TASKS) + "---|---|---|"]
     for r in results:
         lines.append(f"| {r['file']} | {r['student'] or '—'} | {r['group'] or '—'} | {r['variant']} | "
-                     + " | ".join(str(task_score(r, t)) for t in TASKS) + f" | **{r['total']}** | {'⚠️ ' + ', '.join(r['canary']) if r['canary'] else ''} |")
+                     + " | ".join(str(task_score(r, t)) for t in TASKS) + f" | **{r['total']}** | {exp_cell(r)} | "
+                     + f"{'⚠️ ' + ', '.join(r['canary']) if r['canary'] else ''} |")
     lines += ["", "### Замечания", ""]
     for r in results:
         notes = []
         if r["error"]:
             notes.append(r["error"])
         if not r["valid_variant"]:
-            notes.append("не указан или неверен номер варианта (VARIANT от 1 до 40) — проверка не проводилась")
+            notes.append("не указан или неверен номер варианта (VARIANT от 1 до 40) — задачи 1–6 не проверялись")
         notes += [f"{i['name']}: {i['msg']}" for i in r["items"] if i["score"] < i["max"]]
+        e = r["experiment"]
+        if e.get("error"):
+            notes.append("задача 7: " + e["error"])
+        if not e.get("title"):
+            notes.append("задача 7: не заполнена тема EXP_TITLE")
+        if e["n"] < EXP_MIN:
+            notes.append(f"задача 7: в EXP_DATA {e['n']} наблюдений, нужно не меньше {EXP_MIN}")
+        if e.get("same_as"):
+            notes.append("задача 7: данные EXP_DATA совпадают с работами " + ", ".join(e["same_as"]))
         if r["canary"]:
             notes.append("в коде есть метка из скрытой инструкции для нейросетей: " + ", ".join(r["canary"]) + " — стоит обсудить на защите")
         if r["cell_errors"]:
@@ -323,8 +434,9 @@ def main():
     for f in files:
         print(f"Проверяю {f} ...", flush=True)
         r = grade_one(f, args.timeout)
-        print(f"  {r['student'] or '—'}, вариант {r['variant']}: {r['total']} / {r['max']}", flush=True)
+        print(f"  {r['student'] or '—'}, вариант {r['variant']}: {r['total']} / {r['max']}, эксперимент n = {r['experiment']['n']}", flush=True)
         results.append(r)
+    mark_duplicates(results)
     write_reports(results, Path(args.out))
     print((Path(args.out) / "summary.md").read_text(encoding="utf-8"))
     return 0

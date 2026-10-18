@@ -1,14 +1,14 @@
-name: Проверка ДЗ 4
+name: Проверка ДЗ 4–5
 
 on:
   push:
     paths:
-      - "homework/hw04/submissions/**.ipynb"
-      - "homework/hw04/grader/**"
-      - ".github/workflows/grade-hw04.yml"
+      - "homework/hw04-05/submissions/**.ipynb"
+      - "homework/hw04-05/grader/**"
+      - ".github/workflows/grade-hw04-05.yml"
   pull_request:
     paths:
-      - "homework/hw04/submissions/**.ipynb"
+      - "homework/hw04-05/submissions/**.ipynb"
   workflow_dispatch:
 
 # Ноутбуки студентов — чужой код: никаких секретов и прав на запись.
@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: grade-hw04-${{ github.ref }}
+  group: grade-hw04-05-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -30,15 +30,15 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-          cache-dependency-path: homework/hw04/grader/requirements.txt
+          cache-dependency-path: homework/hw04-05/grader/requirements.txt
 
       - name: Установить зависимости
-        run: pip install -r homework/hw04/grader/requirements.txt
+        run: pip install -r homework/hw04-05/grader/requirements.txt
 
       - name: Проверить ноутбуки
         env:
           MPLBACKEND: Agg
-        run: python homework/hw04/grader/grade.py homework/hw04/submissions --out grades
+        run: python homework/hw04-05/grader/grade.py homework/hw04-05/submissions --out grades
 
       - name: Таблица баллов в отчёт
         if: always()
@@ -48,6 +48,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hw04-grades
+          name: hw04-05-grades
           path: grades/
           retention-days: 90
