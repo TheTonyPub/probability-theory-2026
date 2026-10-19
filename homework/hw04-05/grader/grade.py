@@ -28,12 +28,12 @@ from nbclient import NotebookClient
 SHARED = r'''
 import numpy as np
 
-N_VARIANTS = 40
+V = 7   # набор параметров, общий для всех студентов
 
 
-def params(variant):
-    """Параметры варианта. Не изменяйте эту функцию."""
-    v = int(variant)
+def params():
+    """Параметры задач 2 и 4."""
+    v = V
     r4 = 0.5 + 0.04 * (v % 6)
     values4 = np.r_[np.arange(1, 9), 20]
     w4 = np.r_[r4 ** np.arange(8), 0.0]
@@ -59,9 +59,12 @@ def params(variant):
     }
 
 
-def make_data(variant):
-    """Данные варианта для задач 3, 5 и 6. Не изменяйте эту функцию."""
-    v = int(variant)
+SURVEY_ITEMS = 11
+
+
+def make_data():
+    """Данные задач 1, 3, 5 и 6."""
+    v = V
     r = np.random.default_rng(30_000 + v)
     # задача 3: рекламные кампании в трёх регионах
     n = 600
@@ -87,7 +90,16 @@ def make_data(variant):
     hot = r.choice(np.where(pop > 20_000)[0], 4, replace=False)
     pr[hot] *= 1.5
     districts = {"district": np.arange(1, m6 + 1), "population": pop, "cases": r.binomial(pop, pr)}
-    return campaigns, latency, districts
+    # задача 1: анкета 600 студентов, 11 вопросов, ответы 1–5
+    rs = np.random.default_rng(41_004)
+    lam = np.array([[.75, 0, 0], [.7, .1, 0], [.65, 0, .1], [-.6, 0, 0],      # мотивация, q4 — обратный
+                    [0, .75, 0], [.1, .7, 0], [0, .6, -.1],                    # организованность
+                    [0, 0, .7], [0, -.1, .75], [.1, 0, .6],                    # стресс
+                    [.1, .05, .1]])                                            # вопрос без общего фактора
+    f = rs.normal(size=(600, 3))
+    lat = f @ lam.T + rs.normal(size=(600, SURVEY_ITEMS)) * np.sqrt(1 - (lam ** 2).sum(1))
+    survey = np.clip(np.round(3 + 1.2 * lat), 1, 5).astype(int)
+    return survey, campaigns, latency, districts
 '''
 # <<< SHARED
 
@@ -128,23 +140,8 @@ def __hw0405_check(result_path, shared):
         shown = np.round(v, 6).tolist() if v.size <= 6 else f"массив, первые значения {np.round(v.ravel()[:4], 4).tolist()}"
         return False, f"{name} = {shown} — неверно"
 
-    def ref_moments(x, w):
-        x = np.asarray(x, float); w = np.asarray(w, float); w = w / w.sum()
-        c = x[np.argmax(w)]
-        y = x - c
-        m = (y * w).sum()
-        z = y - m
-        var = (z ** 2 * w).sum()
-        skew = (z ** 3 * w).sum() / var ** 1.5 if var > 0 else 0.0
-        return m + c, var, skew
-
     student = str(G.get("STUDENT", "")).strip()
     group = str(G.get("GROUP", "")).strip()
-    try:
-        V = int(G.get("VARIANT", 0))
-    except Exception:
-        V = 0
-    valid = 1 <= V <= ns["N_VARIANTS"]
 
     # задача 7: только сведения для преподавателя
     exp = {"title": str(G.get("EXP_TITLE", "")).strip(), "n": 0, "hash": ""}
@@ -157,39 +154,57 @@ def __hw0405_check(result_path, shared):
     except Exception as exc:
         exp["error"] = f"EXP_DATA не читается как список чисел: {exc}"
 
-    if valid:
-        P = ns["params"](V)
-        camp, lat, dist = ns["make_data"](V)
+    if True:
+        P = ns["params"]()
+        survey, camp, lat, dist = ns["make_data"]()
 
-        # ---- задача 1: функция moments на скрытых тестах
-        def mtest(cases, what):
-            def run():
-                f = get("moments")
-                for x, w in cases:
-                    exp_ = ref_moments(x, w)
-                    got = f(np.array(x, dtype=float), np.array(w, dtype=float))
-                    got = [float(t) for t in got]
-                    if len(got) != 3:
-                        return False, "moments должна возвращать (mean, var, skew)"
-                    tol = [1e-9 * max(1, abs(exp_[0])), 1e-6 * max(exp_[1], 1e-12), 1e-5]
-                    if any(abs(a - b) > t for a, b, t in zip(got, exp_, tol)):
-                        return False, f"{what}: неверно на values={np.round(x[:6], 3).tolist()}…"
+        # ---- задача 1: факторный анализ анкеты
+        from sklearn.decomposition import FactorAnalysis
+        names = [f"q{i + 1}" for i in range(survey.shape[1])]
+        R1 = np.corrcoef(survey, rowvar=False)
+        eig = np.sort(np.linalg.eigvalsh(R1))[::-1]
+        k = int((eig > 1).sum())
+        Z1 = (survey - survey.mean(0)) / survey.std(0, ddof=1)
+        fa = FactorAnalysis(n_components=k, rotation="varimax", random_state=0).fit(Z1)
+        L1 = fa.components_.T
+        h2 = 1 - fa.noise_variance_
+        weak = sorted(q for q, h in zip(names, h2) if h < 0.2)
+        own = np.abs(L1).argmax(axis=1)
+        groups, rev = set(), []
+        for j in range(k):
+            idx = [i for i in range(len(names)) if own[i] == j and h2[i] >= 0.2]
+            groups.add(frozenset(names[i] for i in idx))
+            sign = np.sign(L1[idx, j].sum())
+            rev += [names[i] for i in idx if np.sign(L1[i, j]) != sign]
+        rev = sorted(rev)
+
+        def t11():
+            ok, msg = close("eig1", eig, rtol=1e-6, atol=1e-8)
+            if not ok:
+                return ok, msg
+            got = int(get("k1"))
+            return (got == k), f"k1 = {got} — неверно"
+        add(1, "1.1 eig1, k1", 2.5, t11)
+        add(1, "1.2 h2_1", 2.5, lambda: close("h2_1", h2, rtol=0, atol=0.01))
+
+        def names_of(v):
+            return sorted(str(t) for t in v)
+
+        def t13():
+            got_w = names_of(get("weak1"))
+            if got_w != weak:
+                return False, f"weak1 = {got_w} — неверно"
+            got = {frozenset(map(str, g)) for g in get("groups1")}
+            if got == groups:
                 return True, ""
-            return run
-        rg = np.random.default_rng(1234 + V)
-        basic = [(rg.normal(0, 10, size=k), rg.dirichlet(np.ones(k))) for k in (2, 5, 9)]
-        unnorm = []
-        for k in (4, 7):
-            x = rg.choice(np.arange(-5, 6), size=k - 1, replace=False).astype(float)
-            x = np.r_[x, x[0]]                               # повторяющееся значение
-            unnorm.append((x, rg.integers(0, 20, size=k).astype(float) + np.r_[1, np.zeros(k - 1)]))
-        big = [(1e9 + rg.integers(0, 5, size=6).astype(float), rg.integers(1, 9, size=6).astype(float)),
-               (-3e8 + rg.normal(0, 0.5, size=8), rg.dirichlet(np.ones(8)))]
-        skewc = [(np.array([0.0, 1.0, 10.0]), np.array([0.5, 0.45, 0.05])), (np.array([-4.0, 0.0, 1.0]), np.array([0.1, 0.3, 0.6]))]
-        add(1, "1.1 moments: обычные распределения", 2.5, mtest(basic, "обычный случай"))
-        add(1, "1.2 moments: ненормированные веса, повторы, нулевые веса", 2.5, mtest(unnorm, "ненормированные веса"))
-        add(1, "1.3 moments: большие значения (устойчивость)", 2.5, mtest(big, "значения порядка 1e9"))
-        add(1, "1.4 moments: асимметрия", 2.5, mtest(skewc, "асимметрия"))
+            hint = " (группируйте по модулю нагрузки)" if any(len(g & set(rev)) for g in got - groups) else ""
+            return False, f"groups1 = {[sorted(g) for g in got]} — неверно" + hint
+        add(1, "1.3 weak1, groups1", 2.5, t13)
+
+        def t14():
+            got = names_of(get("reversed1"))
+            return (got == rev), f"reversed1 = {got} — неверно"
+        add(1, "1.4 reversed1", 2.5, t14)
 
         # ---- задача 2: смешанное распределение с таймаутом
         q, c, d, mu, T = P["q2"], P["c2"], P["d2"], P["mu2"], P["T2"]
@@ -248,7 +263,7 @@ def __hw0405_check(result_path, shared):
         x5 = np.asarray(lat, float); n5 = x5.size
         z = _st.norm.ppf(0.975)
         m5, h5 = x5.mean(), z * x5.std(ddof=1) / np.sqrt(n5)
-        rb = np.random.default_rng(777 + V)
+        rb = np.random.default_rng(777)
         med_b, p95_b, max_b = [], [], []
         for _ in range(10):
             xb = x5[rb.integers(0, n5, size=(5_000, n5))]
@@ -325,7 +340,7 @@ def __hw0405_check(result_path, shared):
         add(6, "6.4 flagged6", 5, t64)
 
     total = round(sum(i["score"] for i in items), 2)
-    out = {"student": student, "group": group, "variant": V, "valid_variant": valid,
+    out = {"student": student, "group": group,
            "total": total, "max": 60.0, "items": items, "experiment": exp}
     with open(result_path, "w", encoding="utf-8") as fh:
         json.dump(out, fh, ensure_ascii=False, indent=1)
@@ -365,7 +380,7 @@ def grade_one(path, timeout):
         if result_path.exists():
             res = json.loads(result_path.read_text(encoding="utf-8"))
         else:
-            res = {"student": "", "group": "", "variant": None, "valid_variant": False,
+            res = {"student": "", "group": "",
                    "total": 0.0, "max": 60.0, "items": [], "experiment": {"title": "", "n": 0, "hash": ""}}
             error = error or "проверка не запустилась (ошибка в последней ячейке проверки)"
     res["file"] = Path(path).name
@@ -407,20 +422,20 @@ def write_reports(results, out):
 
     with open(out / "grades.csv", "w", newline="", encoding="utf-8") as fh:
         wr = csv.writer(fh)
-        wr.writerow(["file", "student", "group", "variant"] + [f"task{t}" for t in TASKS]
+        wr.writerow(["file", "student", "group"] + [f"task{t}" for t in TASKS]
                     + ["auto_total", "exp_title", "exp_n", "exp_duplicate_of", "task7_manual", "total", "ai_marker"])
         for r in results:
             e = r["experiment"]
-            wr.writerow([r["file"], r["student"], r["group"], r["variant"]] + [task_score(r, t) for t in TASKS]
+            wr.writerow([r["file"], r["student"], r["group"]] + [task_score(r, t) for t in TASKS]
                         + [r["total"], e.get("title", ""), e["n"], ";".join(e.get("same_as", [])), "", "", ";".join(r["canary"])])
 
     lines = ["## ДЗ 4–5: результаты автопроверки", "",
              "Задачи 1–6 — автоматически (из 60). Задачу 7 (эксперимент, из 40) оценивает преподаватель: "
              "в `grades.csv` для неё есть пустые колонки `task7_manual` и `total`.", "",
-             "| Файл | Студент | Группа | Вариант | " + " | ".join(f"З{t}" for t in TASKS) + " | Авто (из 60) | Эксперимент | Метка ИИ |",
-             "|---|---|---|---|" + "---|" * len(TASKS) + "---|---|---|"]
+             "| Файл | Студент | Группа | " + " | ".join(f"З{t}" for t in TASKS) + " | Авто (из 60) | Эксперимент | Метка ИИ |",
+             "|---|---|---|" + "---|" * len(TASKS) + "---|---|---|"]
     for r in results:
-        lines.append(f"| {r['file']} | {r['student'] or '—'} | {r['group'] or '—'} | {r['variant']} | "
+        lines.append(f"| {r['file']} | {r['student'] or '—'} | {r['group'] or '—'} | "
                      + " | ".join(str(task_score(r, t)) for t in TASKS) + f" | **{r['total']}** | {exp_cell(r)} | "
                      + f"{'⚠️ ' + ', '.join(r['canary']) if r['canary'] else ''} |")
     lines += ["", "### Замечания", ""]
@@ -428,8 +443,6 @@ def write_reports(results, out):
         notes = []
         if r["error"]:
             notes.append(r["error"])
-        if not r["valid_variant"]:
-            notes.append("не указан или неверен номер варианта (VARIANT от 1 до 40) — задачи 1–6 не проверялись")
         notes += [f"{i['name']}: {i['msg']}" for i in r["items"] if i["score"] < i["max"]]
         e = r["experiment"]
         if e.get("error"):
@@ -471,7 +484,7 @@ def main():
     for f in files:
         print(f"Проверяю {f} ...", flush=True)
         r = grade_one(f, args.timeout)
-        print(f"  {r['student'] or '—'}, вариант {r['variant']}: {r['total']} / {r['max']}, эксперимент n = {r['experiment']['n']}", flush=True)
+        print(f"  {r['student'] or '—'}: {r['total']} / {r['max']}, эксперимент n = {r['experiment']['n']}", flush=True)
         results.append(r)
     mark_duplicates(results)
     write_reports(results, Path(args.out))
