@@ -1,8 +1,8 @@
 """Автопроверка ДЗ 4–5 «Матожидание и дисперсия, ЗБЧ и ЦПТ».
 
 Запускает каждый ноутбук с нуля, затем в том же ядре выполняет проверки
-и собирает баллы в таблицу. Части A и B (задачи 1–6, 12 баллов) проверяются
-автоматически. Задачу 7 (эксперимент, 8 баллов) оценивает преподаватель;
+и собирает баллы в таблицу. Части A и B (задачи 1–6, 60 баллов) проверяются
+автоматически. Задачу 7 (эксперимент, 40 баллов) оценивает преподаватель;
 проверка только сообщает, сколько в ней наблюдений, и ищет одинаковые данные
 в разных работах.
 
@@ -192,10 +192,10 @@ def __hw0405_check(result_path, shared):
         big = [(1e9 + rg.integers(0, 5, size=6).astype(float), rg.integers(1, 9, size=6).astype(float)),
                (-3e8 + rg.normal(0, 0.5, size=8), rg.dirichlet(np.ones(8)))]
         skewc = [(np.array([0.0, 1.0, 10.0]), np.array([0.5, 0.45, 0.05])), (np.array([-4.0, 0.0, 1.0]), np.array([0.1, 0.3, 0.6]))]
-        add(1, "1.1 moments: обычные распределения", 0.5, mtest(basic, "обычный случай"))
-        add(1, "1.2 moments: ненормированные веса, повторы, нулевые веса", 0.5, mtest(unnorm, "ненормированные веса"))
-        add(1, "1.3 moments: большие значения (устойчивость)", 0.5, mtest(big, "значения порядка 1e9"))
-        add(1, "1.4 moments: асимметрия", 0.5, mtest(skewc, "асимметрия"))
+        add(1, "1.1 moments: обычные распределения", 2.5, mtest(basic, "обычный случай"))
+        add(1, "1.2 moments: ненормированные веса, повторы, нулевые веса", 2.5, mtest(unnorm, "ненормированные веса"))
+        add(1, "1.3 moments: большие значения (устойчивость)", 2.5, mtest(big, "значения порядка 1e9"))
+        add(1, "1.4 moments: асимметрия", 2.5, mtest(skewc, "асимметрия"))
 
         # ---- задача 2: смешанное распределение с таймаутом
         q, c, d, mu, T = P["q2"], P["c2"], P["d2"], P["mu2"], P["T2"]
@@ -205,14 +205,14 @@ def __hw0405_check(result_path, shared):
         EM, EM2 = d + e1, d * d + 2 * d * e1 + e2
         EX = q * c + (1 - q) * EM
         DX = q * c * c + (1 - q) * EM2 - EX ** 2
-        add(2, "2.1 p2_timeout", 0.5, lambda: close("p2_timeout", (1 - q) * np.exp(-lam * t0)))
-        add(2, "2.2 EX2", 0.75, lambda: close("EX2", EX))
-        add(2, "2.3 DX2", 0.75, lambda: close("DX2", DX))
+        add(2, "2.1 p2_timeout", 2.5, lambda: close("p2_timeout", (1 - q) * np.exp(-lam * t0)))
+        add(2, "2.2 EX2", 3.75, lambda: close("EX2", EX))
+        add(2, "2.3 DX2", 3.75, lambda: close("DX2", DX))
 
         # ---- задача 3: кампании, Симпсон
         keep = camp["is_test"] == 0
         reg, x3, y3 = camp["region"][keep], camp["ads"][keep], camp["sales"][keep]
-        add(3, "3.1 corr3_all", 0.5, lambda: close("corr3_all", np.corrcoef(x3, y3)[0, 1]))
+        add(3, "3.1 corr3_all", 2.5, lambda: close("corr3_all", np.corrcoef(x3, y3)[0, 1]))
 
         def t32():
             got = dict(get("corr3_by_region"))
@@ -221,14 +221,14 @@ def __hw0405_check(result_path, shared):
                 return False, f"ключи {sorted(map(str, got))}, ожидались {sorted(exp_)}"
             bad = [g for g in exp_ if not np.isclose(float(got[g]), exp_[g], rtol=1e-6)]
             return (not bad), f"неверно для регионов {bad}"
-        add(3, "3.2 corr3_by_region", 0.5, t32)
+        add(3, "3.2 corr3_by_region", 2.5, t32)
         xc, yc = x3.copy(), y3.copy()
         for g in np.unique(reg):
             xc[reg == g] -= x3[reg == g].mean(); yc[reg == g] -= y3[reg == g].mean()
-        add(3, "3.3 slope3_within", 0.5, lambda: close("slope3_within", (xc * yc).sum() / (xc ** 2).sum()))
+        add(3, "3.3 slope3_within", 2.5, lambda: close("slope3_within", (xc * yc).sum() / (xc ** 2).sum()))
         ss_tot = ((y3 - y3.mean()) ** 2).sum()
         ss_between = sum((reg == g).sum() * (y3[reg == g].mean() - y3.mean()) ** 2 for g in np.unique(reg))
-        add(3, "3.4 eta2_3", 0.5, lambda: close("eta2_3", ss_between / ss_tot))
+        add(3, "3.4 eta2_3", 2.5, lambda: close("eta2_3", ss_between / ss_tot))
 
         # ---- задача 4: точная сумма против ЦПТ
         vals, probs = P["values4"], P["probs4"]
@@ -237,8 +237,8 @@ def __hw0405_check(result_path, shared):
         pm = np.array([1.0])
         for _ in range(P["n4"]):
             pm = np.convolve(pm, pmf1)
-        add(4, "4.1 p4_exact", 0.75, lambda: close("p4_exact", pm[P["s4"]:].sum(), rtol=1e-6, atol=1e-12))
-        add(4, "4.2 p4_clt", 0.5, lambda: close("p4_clt", _st.norm.sf((P["s4"] - 0.5 - P["n4"] * mu4) / (sd4 * np.sqrt(P["n4"]))), rtol=1e-6, atol=1e-12))
+        add(4, "4.1 p4_exact", 3.75, lambda: close("p4_exact", pm[P["s4"]:].sum(), rtol=1e-6, atol=1e-12))
+        add(4, "4.2 p4_clt", 2.5, lambda: close("p4_clt", _st.norm.sf((P["s4"] - 0.5 - P["n4"] * mu4) / (sd4 * np.sqrt(P["n4"]))), rtol=1e-6, atol=1e-12))
         pm, nmin = np.array([1.0]), 0
         while pm[P["T4"]:].sum() < 0.95:
             pm = np.convolve(pm, pmf1); nmin += 1
@@ -248,7 +248,7 @@ def __hw0405_check(result_path, shared):
             if got != nmin:
                 return False, f"n4_min = {got:g} — неверно" + (" (похоже на ответ по ЦПТ, а нужен точный)" if abs(got - nmin) <= 3 else "")
             return True, ""
-        add(4, "4.3 n4_min", 0.75, t43)
+        add(4, "4.3 n4_min", 3.75, t43)
 
         # ---- задача 5: A/B-тест, дельта-метод
         uid, grp, clk = vlog["user_id"], vlog["group"], vlog["click"]
@@ -264,10 +264,10 @@ def __hw0405_check(result_path, shared):
         diff = ctr["B"] - ctr["A"]
         sed = np.sqrt(vd["A"] + vd["B"])
         z = _st.norm.ppf(0.975)
-        add(5, "5.1 diff5", 0.25, lambda: close("diff5", diff))
-        add(5, "5.2 se5_naive", 0.5, lambda: close("se5_naive", np.sqrt(vn["A"] + vn["B"])))
-        add(5, "5.3 se5_delta", 0.75, lambda: close("se5_delta", sed))
-        add(5, "5.4 ci5", 0.5, lambda: close("ci5", [diff - z * sed, diff + z * sed]))
+        add(5, "5.1 diff5", 1.25, lambda: close("diff5", diff))
+        add(5, "5.2 se5_naive", 2.5, lambda: close("se5_naive", np.sqrt(vn["A"] + vn["B"])))
+        add(5, "5.3 se5_delta", 3.75, lambda: close("se5_delta", sed))
+        add(5, "5.4 ci5", 2.5, lambda: close("ci5", [diff - z * sed, diff + z * sed]))
 
         # ---- задача 6: воронка
         pop, cases = dist["population"], dist["cases"]
@@ -276,20 +276,20 @@ def __hw0405_check(result_path, shared):
         z6 = (rate - pp) / np.sqrt(pp * (1 - pp) / pop)
         top = np.argsort(-rate, kind="stable")[:20]
         flagged = np.sort(dist["district"][z6 > _st.norm.isf(0.05 / pop.size)])
-        add(6, "6.1 p6_pooled", 0.25, lambda: close("p6_pooled", pp))
-        add(6, "6.2 z6", 0.5, lambda: close("z6", z6))
-        add(6, "6.3 small6_share", 0.25, lambda: close("small6_share", np.mean(pop[top] < np.median(pop))))
+        add(6, "6.1 p6_pooled", 1.25, lambda: close("p6_pooled", pp))
+        add(6, "6.2 z6", 2.5, lambda: close("z6", z6))
+        add(6, "6.3 small6_share", 1.25, lambda: close("small6_share", np.mean(pop[top] < np.median(pop))))
 
         def t64():
             got = np.sort(np.asarray(get("flagged6")).astype(int).ravel())
             if got.shape == flagged.shape and np.array_equal(got, flagged):
                 return True, ""
             return False, f"flagged6 = {got.tolist()[:12]} — неверно"
-        add(6, "6.4 flagged6", 1.0, t64)
+        add(6, "6.4 flagged6", 5, t64)
 
     total = round(sum(i["score"] for i in items), 2)
     out = {"student": student, "group": group, "variant": V, "valid_variant": valid,
-           "total": total, "max": 12.0, "items": items, "experiment": exp}
+           "total": total, "max": 60.0, "items": items, "experiment": exp}
     with open(result_path, "w", encoding="utf-8") as fh:
         json.dump(out, fh, ensure_ascii=False, indent=1)
 
@@ -329,7 +329,7 @@ def grade_one(path, timeout):
             res = json.loads(result_path.read_text(encoding="utf-8"))
         else:
             res = {"student": "", "group": "", "variant": None, "valid_variant": False,
-                   "total": 0.0, "max": 12.0, "items": [], "experiment": {"title": "", "n": 0, "hash": ""}}
+                   "total": 0.0, "max": 60.0, "items": [], "experiment": {"title": "", "n": 0, "hash": ""}}
             error = error or "проверка не запустилась (ошибка в последней ячейке проверки)"
     res["file"] = Path(path).name
     res["error"] = error
@@ -378,9 +378,9 @@ def write_reports(results, out):
                         + [r["total"], e.get("title", ""), e["n"], ";".join(e.get("same_as", [])), "", "", ";".join(r["canary"])])
 
     lines = ["## ДЗ 4–5: результаты автопроверки", "",
-             "Задачи 1–6 — автоматически (из 12). Задачу 7 (эксперимент, из 8) оценивает преподаватель: "
+             "Задачи 1–6 — автоматически (из 60). Задачу 7 (эксперимент, из 40) оценивает преподаватель: "
              "в `grades.csv` для неё есть пустые колонки `task7_manual` и `total`.", "",
-             "| Файл | Студент | Группа | Вариант | " + " | ".join(f"З{t}" for t in TASKS) + " | Авто (из 12) | Эксперимент | Метка ИИ |",
+             "| Файл | Студент | Группа | Вариант | " + " | ".join(f"З{t}" for t in TASKS) + " | Авто (из 60) | Эксперимент | Метка ИИ |",
              "|---|---|---|---|" + "---|" * len(TASKS) + "---|---|---|"]
     for r in results:
         lines.append(f"| {r['file']} | {r['student'] or '—'} | {r['group'] or '—'} | {r['variant']} | "
