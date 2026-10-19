@@ -74,17 +74,11 @@ def make_data(variant):
     ads = np.where(is_test == 1, np.round(r.uniform(150, 400, n), 2), ads)
     sales = np.where(is_test == 1, 0.0, sales)
     campaigns = {"region": region, "ads": ads, "sales": sales, "is_test": is_test}
-    # задача 5: журнал просмотров A/B-теста (одна строка — один просмотр)
-    m = 3000
-    group = np.where(r.random(m) < 0.5, "A", "B")
-    lift = 1 + 0.05 * (v % 5)
-    q = r.beta(1.2, 12.0, m) * np.where(group == "B", lift, 1.0)
-    views = r.geometric(1 / (8 + v % 6), m)
-    clicks = r.binomial(views, np.minimum(q, 1))
-    user = np.repeat(np.arange(1, m + 1), views)
-    click = np.concatenate([np.r_[np.ones(c, int), np.zeros(k - c, int)] for c, k in zip(clicks, views)])
-    order = r.permutation(user.size)
-    views_log = {"user_id": user[order], "group": np.repeat(group, views)[order], "click": click[order]}
+    # задача 5: время ответа сервиса, мс (быстрые запросы и запросы через медленную базу)
+    n5 = 300 + 20 * (v % 6)
+    slow = r.random(n5) < 0.12 + 0.01 * (v % 5)
+    latency = np.round(np.where(slow, r.lognormal(np.log(320 + 20 * (v % 4)), 0.5, n5),
+                                r.lognormal(np.log(70 + 5 * (v % 6)), 0.45, n5)), 1)
     # задача 6: заболеваемость по районам
     m6 = 500
     pop = np.round(np.exp(r.uniform(np.log(200), np.log(100_000), m6))).astype(int)
@@ -93,7 +87,7 @@ def make_data(variant):
     hot = r.choice(np.where(pop > 20_000)[0], 4, replace=False)
     pr[hot] *= 1.5
     districts = {"district": np.arange(1, m6 + 1), "population": pop, "cases": r.binomial(pop, pr)}
-    return campaigns, views_log, districts
+    return campaigns, latency, districts
 '''
 # <<< SHARED
 
@@ -165,7 +159,7 @@ def __hw0405_check(result_path, shared):
 
     if valid:
         P = ns["params"](V)
-        camp, vlog, dist = ns["make_data"](V)
+        camp, lat, dist = ns["make_data"](V)
 
         # ---- задача 1: функция moments на скрытых тестах
         def mtest(cases, what):
@@ -250,24 +244,67 @@ def __hw0405_check(result_path, shared):
             return True, ""
         add(4, "4.3 n4_min", 3.75, t43)
 
-        # ---- задача 5: A/B-тест, дельта-метод
-        uid, grp, clk = vlog["user_id"], vlog["group"], vlog["click"]
-        ctr, vn, vd = {}, {}, {}
-        for g in ("A", "B"):
-            sel = grp == g
-            users, inv = np.unique(uid[sel], return_inverse=True)
-            cu = np.bincount(inv, weights=clk[sel]); vu = np.bincount(inv).astype(float)
-            R = cu.sum() / vu.sum()
-            ctr[g] = R
-            vn[g] = R * (1 - R) / vu.sum()
-            vd[g] = np.var(cu - R * vu, ddof=1) / (users.size * vu.mean() ** 2)
-        diff = ctr["B"] - ctr["A"]
-        sed = np.sqrt(vd["A"] + vd["B"])
+        # ---- задача 5: бутстреп
+        x5 = np.asarray(lat, float); n5 = x5.size
         z = _st.norm.ppf(0.975)
-        add(5, "5.1 diff5", 1.25, lambda: close("diff5", diff))
-        add(5, "5.2 se5_naive", 2.5, lambda: close("se5_naive", np.sqrt(vn["A"] + vn["B"])))
-        add(5, "5.3 se5_delta", 3.75, lambda: close("se5_delta", sed))
-        add(5, "5.4 ci5", 2.5, lambda: close("ci5", [diff - z * sed, diff + z * sed]))
+        m5, h5 = x5.mean(), z * x5.std(ddof=1) / np.sqrt(n5)
+        rb = np.random.default_rng(777 + V)
+        med_b, p95_b, max_b = [], [], []
+        for _ in range(10):
+            xb = x5[rb.integers(0, n5, size=(5_000, n5))]
+            med_b.append(np.median(xb, axis=1)); p95_b.append(np.quantile(xb, 0.95, axis=1)); max_b.append(xb.max(axis=1))
+        med_b, p95_b, max_b = map(np.concatenate, (med_b, p95_b, max_b))
+        se_med = med_b.std()
+        ci_p95 = np.quantile(p95_b, [0.025, 0.975])
+        sh_max = np.mean(max_b == x5.max())
+        def t51():
+            for nm, val in [("mean5", m5), ("median5", np.median(x5)), ("p95_5", np.quantile(x5, 0.95))]:
+                ok, msg = close(nm, val)
+                if not ok:
+                    return ok, msg
+            return True, ""
+        add(5, "5.1 mean5, median5, p95_5", 1.25, t51)
+
+        def t52():
+            ok, msg = close("ci5_mean", [m5 - h5, m5 + h5])
+            if not ok:
+                got = np.asarray(get("ci5_mean"), float).ravel()
+                if got.size == 2 and np.allclose(got, [m5 - 2 * h5 / z, m5 + 2 * h5 / z], rtol=1e-6):
+                    msg += " (похоже на коэффициент 2 вместо 1,96)"
+            return ok, msg
+        add(5, "5.2 ci5_mean", 2.5, t52)
+
+        def t53a():
+            got = float(get("se5_median"))
+            if abs(got - se_med) <= 0.1 * se_med:
+                return True, ""
+            norm_f = 1.2533 * x5.std(ddof=1) / np.sqrt(n5)
+            hint = " (это формула для нормальных данных, нужен бутстреп)" if abs(got - norm_f) < 0.02 * norm_f else ""
+            return False, f"se5_median = {got:.4g}, ожидалось около {se_med:.4g}" + hint
+        add(5, "5.3 se5_median (бутстреп)", 1.875, t53a)
+
+        def t53b():
+            got = np.asarray(get("ci5_p95"), float).ravel()
+            # хвост бутстреп-распределения p95 дискретный, поэтому сравниваем ранги, а не значения
+            def rank_ok(val, q):
+                return np.mean(p95_b < val) - 1e-9 <= q + 0.015 and np.mean(p95_b <= val) + 1e-9 >= q - 0.015
+            if got.size == 2 and rank_ok(min(got), 0.025) and rank_ok(max(got), 0.975):
+                return True, ""
+            return False, f"ci5_p95 = {np.round(got, 2).tolist()}, ожидалось около {np.round(ci_p95, 2).tolist()}"
+        add(5, "5.3 ci5_p95 (процентильный интервал)", 1.875, t53b)
+
+        def t54():
+            th = 1 - (1 - 1 / n5) ** n5
+            ok, msg = close("share5_theory", th)
+            if not ok:
+                return ok, msg
+            got = float(get("share5_max"))
+            if got == float(get("share5_theory")):
+                return False, "share5_max совпадает с теорией в точности: посчитайте долю по бутстреп-выборкам"
+            if abs(got - sh_max) <= 0.04:
+                return True, ""
+            return False, f"share5_max = {got:.4g}, ожидалось около {sh_max:.3f}"
+        add(5, "5.4 share5_max, share5_theory", 2.5, t54)
 
         # ---- задача 6: воронка
         pop, cases = dist["population"], dist["cases"]
